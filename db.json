@@ -6,9 +6,9 @@
   "resigns": [],
   "money": {},
   "config": {
-    "applicationChannel": "STAFF_CHANNEL_ID",
-    "staffServerId": "STAFF_SERVER_ID",
-    "mainServerId": "MAIN_SERVER_ID",
+    "applicationChannel": "1495224063323541585",
+    "staffServerId": "1495198147109060618",
+    "mainServerId": "1488275472319119420",
     "staffRoles": [],
     "minStaffPosition": 1
   }
