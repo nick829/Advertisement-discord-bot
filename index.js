@@ -7,7 +7,8 @@ const {
   SlashCommandBuilder,
   REST,
   Routes,
-  EmbedBuilder
+  EmbedBuilder,
+  PermissionsBitField
 } = require("discord.js");
 
 const express = require("express");
@@ -36,18 +37,16 @@ app.get("/", (req, res) => res.send("Bot Online ✅"));
 
 app.get("/dashboard", (req, res) => {
   res.send(`
-    <h1>Staff System Dashboard</h1>
+    <h1>Staff System</h1>
     <p>Applications: ${db.applications.length}</p>
     <p>Warns: ${db.warns.length}</p>
     <p>Blacklist: ${db.blacklist.length}</p>
     <p>Troll: ${db.troll.length}</p>
-    <p>Resigns: ${db.resigns.length}</p>
+    <p>Money Users: ${Object.keys(db.money).length}</p>
   `);
 });
 
-app.listen(config.port, () => {
-  console.log(`Dashboard running on ${config.port}`);
-});
+app.listen(config.port, () => console.log("Dashboard running"));
 
 // ================= CLIENT =================
 const client = new Client({
@@ -58,20 +57,58 @@ const client = new Client({
 client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
 
-  // CREATE LOG CATEGORY
   const guild = await client.guilds.fetch(config.staffGuildId);
+  await setupLogs(guild);
+});
+
+// ================= ROLE HIERARCHY =================
+function canUseStaff(member) {
+  return (
+    member.permissions.has(PermissionsBitField.Flags.Administrator) ||
+    member.roles.highest.position >= db.config.minStaffPosition
+  );
+}
+
+// ================= LOG SYSTEM =================
+async function setupLogs(guild) {
 
   let category = guild.channels.cache.find(c => c.name === "SERVER LOGS");
 
   if (!category) {
-    await guild.channels.create({
+    category = await guild.channels.create({
       name: "SERVER LOGS",
       type: 4
     });
   }
 
-  console.log("Logs category ready");
-});
+  const channels = [
+    "verification-s2-logs",
+    "requests",
+    "break-requests",
+    "resignations",
+    "blacklists",
+    "mass-bans",
+    "mass-blacklist",
+    "lvl-up",
+    "tests",
+    "money-logs",
+    "join-and-leave"
+  ];
+
+  for (const name of channels) {
+    const exists = guild.channels.cache.find(c => c.name === name);
+
+    if (!exists) {
+      await guild.channels.create({
+        name,
+        type: 0,
+        parent: category.id
+      });
+    }
+  }
+
+  console.log("📁 Logs ready");
+}
 
 // ================= HELPERS =================
 async function giveRole(guildId, userId, roleId) {
@@ -91,10 +128,6 @@ async function removeRoles(guildId, userId, roles) {
   }
 }
 
-function isStaff(member) {
-  return db.config.staffRoles?.some(r => member.roles.cache.has(r));
-}
-
 // ================= QUESTIONS =================
 const questions = [
   "Why do you want this role?",
@@ -102,7 +135,6 @@ const questions = [
   "How active are you?"
 ];
 
-// ================= DM ASK =================
 async function ask(user, q) {
   await user.send(q);
 
@@ -118,20 +150,21 @@ async function ask(user, q) {
 // ================= INTERACTIONS =================
 client.on("interactionCreate", async (i) => {
 
-  // PANEL OPEN
+  const guild = await client.guilds.fetch(config.staffGuildId);
+
+  // PANEL
   if (i.isButton() && i.customId === "open_apply") {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("hr").setLabel("HR").setStyle(ButtonStyle.Primary),
       new ButtonBuilder().setCustomId("partner").setLabel("Partner").setStyle(ButtonStyle.Success),
-      new ButtonBuilder().setCustomId("mod").setLabel("Moderator").setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId("mod").setLabel("Mod").setStyle(ButtonStyle.Danger)
     );
 
-    return i.reply({ content: "📩 Choose role:", components: [row], ephemeral: true });
+    return i.reply({ content: "📩 Choose role", components: [row], ephemeral: true });
   }
 
-  // ROLE SELECT
   if (["hr", "partner", "mod"].includes(i.customId)) {
-    return startApplication(i, i.customId);
+    return startApp(i, i.customId);
   }
 
   // ACCEPT
@@ -139,18 +172,16 @@ client.on("interactionCreate", async (i) => {
     const id = i.customId.split("_")[1];
     const app = db.applications.find(a => a.id === id);
 
-    if (!app) return i.reply({ content: "Not found", ephemeral: true });
+    if (!app) return i.reply({ ephemeral: true, content: "Not found" });
 
-    // GIVE ROLE
-    await giveRole(config.mainGuildId, app.user, db.config.traineeRole);
+    await giveRole(config.mainGuildId, app.user, db.config.staffRoles[0]);
 
-    // DM USER
     try {
-      const user = await client.users.fetch(app.user);
-      await user.send(`🟢 You were ACCEPTED for **${app.role}**`);
+      const u = await client.users.fetch(app.user);
+      await u.send("🟢 ACCEPTED");
     } catch {}
 
-    return i.reply(`🟢 Accepted <@${app.user}>`);
+    return i.reply("Accepted");
   }
 
   // DENY
@@ -158,116 +189,92 @@ client.on("interactionCreate", async (i) => {
     const id = i.customId.split("_")[1];
     const app = db.applications.find(a => a.id === id);
 
-    if (!app) return i.reply({ content: "Not found", ephemeral: true });
-
     try {
-      const user = await client.users.fetch(app.user);
-      await user.send(`🔴 You were DENIED for **${app.role}**`);
+      const u = await client.users.fetch(app.user);
+      await u.send("🔴 DENIED");
     } catch {}
 
-    return i.reply(`🔴 Denied <@${app.user}>`);
+    return i.reply("Denied");
   }
 
   // RESIGN ACCEPT
-  if (i.isButton() && i.customId.startsWith("resign_accept_")) {
-    const userId = i.customId.split("_")[2];
+  if (i.isButton() && i.customId.startsWith("resign_")) {
+    const userId = i.customId.split("_")[1];
 
     await removeRoles(config.mainGuildId, userId, db.config.staffRoles);
 
-    const staffGuild = await client.guilds.fetch(config.staffGuildId);
-    const member = await staffGuild.members.fetch(userId);
-    await member.kick("Resigned");
+    const staff = await guild.members.fetch(userId);
+    if (staff) await staff.kick("Resigned");
 
-    return i.reply("🚪 Resignation approved and user removed.");
+    return i.reply("Resignation accepted");
   }
 
-  // RESIGN COMMAND
-  if (i.isChatInputCommand() && i.commandName === "resign") {
+  // FIRE
+  if (i.isChatInputCommand() && i.commandName === "fire") {
+
+    if (!canUseStaff(i.member))
+      return i.reply({ content: "No permission", ephemeral: true });
+
+    const user = i.options.getUser("user");
     const reason = i.options.getString("reason");
 
-    const data = {
-      user: i.user.id,
-      reason,
-      time: Date.now()
-    };
+    await user.send(`❌ Fired: ${reason}`);
 
-    db.resigns.push(data);
-    saveDB();
+    await removeRoles(config.mainGuildId, user.id, db.config.staffRoles);
 
-    const channel = await client.channels.fetch(db.config.resignChannel);
+    const staff = await guild.members.fetch(user.id);
+    if (staff) await staff.kick("Fired");
 
-    const msg = await channel.send(
-      `📩 RESIGN REQUEST\nUser: <@${i.user.id}>\nReason: ${reason}`
-    );
-
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`resign_accept_${i.user.id}`)
-        .setLabel("Accept Resign")
-        .setStyle(ButtonStyle.Danger)
-    );
-
-    await msg.edit({ components: [row] });
-
-    return i.reply({ content: "📩 Sent", ephemeral: true });
+    return i.reply(`Fired ${user.tag}`);
   }
 
-  // PANEL COMMAND
+  // PANEL
   if (i.isChatInputCommand() && i.commandName === "panel") {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder()
         .setCustomId("open_apply")
-        .setLabel("Apply Now")
+        .setLabel("Apply")
         .setStyle(ButtonStyle.Primary)
     );
 
-    return i.reply({ content: "🚀 Applications Open", components: [row] });
+    return i.reply({ content: "Panel", components: [row] });
   }
 });
 
-// ================= APPLICATION FLOW =================
-async function startApplication(i, roleKey) {
+// ================= APPLICATION =================
+async function startApp(i, roleKey) {
+
   const roles = {
     hr: "HR",
-    partner: "Partnership Manager",
-    mod: "Moderator"
+    partner: "Partner",
+    mod: "Mod"
   };
 
-  const role = roles[roleKey];
-
   try {
-    await i.user.send(`📩 Starting **${role}** application`);
+    await i.user.send("Starting application...");
 
     const answers = [];
 
-    for (let q of questions) {
+    for (const q of questions) {
       answers.push(await ask(i.user, q));
     }
 
     const id = Date.now().toString();
 
-    const app = {
+    db.applications.push({
       id,
       user: i.user.id,
-      role,
-      answers,
-      time: Date.now()
-    };
+      role: roles[roleKey],
+      answers
+    });
 
-    db.applications.push(app);
     saveDB();
 
     const channel = await client.channels.fetch(db.config.applicationChannel);
 
     const embed = new EmbedBuilder()
-      .setTitle("📩 New Application")
-      .setDescription(`User: <@${i.user.id}>\nRole: ${role}`)
-      .setColor("Blue")
-      .setFooter({ text: `ID: ${id}` });
-
-    questions.forEach((q, index) => {
-      embed.addFields({ name: q, value: answers[index] });
-    });
+      .setTitle("Application")
+      .setDescription(`<@${i.user.id}>`);
 
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId(`accept_${id}`).setLabel("Accept").setStyle(ButtonStyle.Success),
@@ -276,20 +283,22 @@ async function startApplication(i, roleKey) {
 
     await channel.send({ embeds: [embed], components: [row] });
 
-    return i.reply({ content: "📩 Check DMs", ephemeral: true });
+    return i.reply({ content: "Check DMs", ephemeral: true });
 
   } catch {
-    return i.reply({ content: "❌ Enable DMs", ephemeral: true });
+    return i.reply({ content: "Enable DMs", ephemeral: true });
   }
 }
 
-// ================= SLASH COMMANDS =================
+// ================= COMMANDS =================
 const commands = [
   new SlashCommandBuilder().setName("panel").setDescription("Open panel"),
 
   new SlashCommandBuilder()
-    .setName("resign")
-    .addStringOption(o => o.setName("reason").setRequired(true))
+    .setName("fire")
+    .setDescription("Fire staff")
+    .addUserOption(o => o.setName("user").setRequired(true))
+    .addStringOption(o => o.setName("reason"))
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(config.token);
