@@ -4,13 +4,12 @@
   "blacklist": [],
   "troll": [],
   "resigns": [],
+  "money": {},
   "config": {
     "applicationChannel": "STAFF_CHANNEL_ID",
-    "resignChannel": "RESIGN_CHANNEL_ID",
     "staffServerId": "STAFF_SERVER_ID",
     "mainServerId": "MAIN_SERVER_ID",
     "staffRoles": [],
-    "traineeRole": "TRAINEE_ROLE_ID",
-    "bodRole": "BOD_ROLE_ID"
+    "minStaffPosition": 1
   }
 }
