@@ -1,0 +1,11 @@
+{
+  "applications": [],
+  "warns": [],
+  "blacklist": [],
+  "troll": [],
+  "config": {
+    "applicationChannel": "STAFF_CHANNEL_ID",
+    "mainServerId": "MAIN_SERVER_ID",
+    "staffServerId": "STAFF_SERVER_ID"
+  }
+}
