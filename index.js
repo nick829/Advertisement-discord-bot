@@ -16,10 +16,10 @@ const fs = require("fs");
 
 // ================= CONFIG =================
 const config = {
-  token: "YOUR_BOT_TOKEN",
-  clientId: "YOUR_CLIENT_ID",
-  mainGuildId: "MAIN_SERVER_ID",
-  staffGuildId: "STAFF_SERVER_ID",
+  token: "ADD_DISCORD_TOKEN",
+  clientId: "1497121613345198111",
+  mainGuildId: "1488275472319119420",
+  staffGuildId: "1495198147109060618",
   port: 3000
 };
 
