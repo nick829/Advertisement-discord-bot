@@ -32,45 +32,93 @@ function saveDB() {
 // ================= EXPRESS DASHBOARD =================
 const app = express();
 
-app.get("/", (req, res) => {
-  res.send("Bot Online ✅");
-});
+app.get("/", (req, res) => res.send("Bot Online ✅"));
 
 app.get("/dashboard", (req, res) => {
   res.send(`
-    <h1>Public Dashboard</h1>
+    <h1>Staff System Dashboard</h1>
     <p>Applications: ${db.applications.length}</p>
     <p>Warns: ${db.warns.length}</p>
     <p>Blacklist: ${db.blacklist.length}</p>
     <p>Troll: ${db.troll.length}</p>
+    <p>Resigns: ${db.resigns.length}</p>
   `);
 });
 
 app.listen(config.port, () => {
-  console.log(`Dashboard running on port ${config.port}`);
+  console.log(`Dashboard running on ${config.port}`);
 });
 
-// ================= DISCORD CLIENT =================
+// ================= CLIENT =================
 const client = new Client({
   intents: [GatewayIntentBits.Guilds, GatewayIntentBits.DirectMessages],
   partials: ["CHANNEL"]
 });
 
-client.once("ready", () => {
+client.once("ready", async () => {
   console.log(`Logged in as ${client.user.tag}`);
+
+  // CREATE LOG CATEGORY
+  const guild = await client.guilds.fetch(config.staffGuildId);
+
+  let category = guild.channels.cache.find(c => c.name === "SERVER LOGS");
+
+  if (!category) {
+    await guild.channels.create({
+      name: "SERVER LOGS",
+      type: 4
+    });
+  }
+
+  console.log("Logs category ready");
 });
 
-// ================= APPLICATION QUESTIONS =================
+// ================= HELPERS =================
+async function giveRole(guildId, userId, roleId) {
+  const guild = await client.guilds.fetch(guildId);
+  const member = await guild.members.fetch(userId);
+  if (member && roleId) await member.roles.add(roleId);
+}
+
+async function removeRoles(guildId, userId, roles) {
+  const guild = await client.guilds.fetch(guildId);
+  const member = await guild.members.fetch(userId);
+
+  for (const r of roles) {
+    if (member.roles.cache.has(r)) {
+      await member.roles.remove(r);
+    }
+  }
+}
+
+function isStaff(member) {
+  return db.config.staffRoles?.some(r => member.roles.cache.has(r));
+}
+
+// ================= QUESTIONS =================
 const questions = [
   "Why do you want this role?",
   "Do you have experience?",
   "How active are you?"
 ];
 
-// ================= BUTTON SYSTEM =================
+// ================= DM ASK =================
+async function ask(user, q) {
+  await user.send(q);
+
+  const collected = await user.dmChannel.awaitMessages({
+    filter: m => m.author.id === user.id,
+    max: 1,
+    time: 300000
+  });
+
+  return collected.first()?.content || "No answer";
+}
+
+// ================= INTERACTIONS =================
 client.on("interactionCreate", async (i) => {
 
-  // OPEN PANEL
+  // PANEL OPEN
   if (i.isButton() && i.customId === "open_apply") {
     const row = new ActionRowBuilder().addComponents(
       new ButtonBuilder().setCustomId("hr").setLabel("HR").setStyle(ButtonStyle.Primary),
@@ -78,11 +126,7 @@ client.on("interactionCreate", async (i) => {
       new ButtonBuilder().setCustomId("mod").setLabel("Moderator").setStyle(ButtonStyle.Danger)
     );
 
-    return i.reply({
-      content: "📩 Choose a role:",
-      components: [row],
-      ephemeral: true
-    });
+    return i.reply({ content: "📩 Choose role:", components: [row], ephemeral: true });
   }
 
   // ROLE SELECT
@@ -90,30 +134,98 @@ client.on("interactionCreate", async (i) => {
     return startApplication(i, i.customId);
   }
 
-  // ACCEPT APPLICATION
+  // ACCEPT
   if (i.isButton() && i.customId.startsWith("accept_")) {
     const id = i.customId.split("_")[1];
     const app = db.applications.find(a => a.id === id);
 
     if (!app) return i.reply({ content: "Not found", ephemeral: true });
 
-    await i.reply(`🟢 Accepted <@${app.user}> for **${app.role}**`);
-    return;
+    // GIVE ROLE
+    await giveRole(config.mainGuildId, app.user, db.config.traineeRole);
+
+    // DM USER
+    try {
+      const user = await client.users.fetch(app.user);
+      await user.send(`🟢 You were ACCEPTED for **${app.role}**`);
+    } catch {}
+
+    return i.reply(`🟢 Accepted <@${app.user}>`);
   }
 
-  // DENY APPLICATION
+  // DENY
   if (i.isButton() && i.customId.startsWith("deny_")) {
     const id = i.customId.split("_")[1];
     const app = db.applications.find(a => a.id === id);
 
     if (!app) return i.reply({ content: "Not found", ephemeral: true });
 
-    await i.reply(`🔴 Denied <@${app.user}> for **${app.role}**`);
-    return;
+    try {
+      const user = await client.users.fetch(app.user);
+      await user.send(`🔴 You were DENIED for **${app.role}**`);
+    } catch {}
+
+    return i.reply(`🔴 Denied <@${app.user}>`);
+  }
+
+  // RESIGN ACCEPT
+  if (i.isButton() && i.customId.startsWith("resign_accept_")) {
+    const userId = i.customId.split("_")[2];
+
+    await removeRoles(config.mainGuildId, userId, db.config.staffRoles);
+
+    const staffGuild = await client.guilds.fetch(config.staffGuildId);
+    const member = await staffGuild.members.fetch(userId);
+    await member.kick("Resigned");
+
+    return i.reply("🚪 Resignation approved and user removed.");
+  }
+
+  // RESIGN COMMAND
+  if (i.isChatInputCommand() && i.commandName === "resign") {
+    const reason = i.options.getString("reason");
+
+    const data = {
+      user: i.user.id,
+      reason,
+      time: Date.now()
+    };
+
+    db.resigns.push(data);
+    saveDB();
+
+    const channel = await client.channels.fetch(db.config.resignChannel);
+
+    const msg = await channel.send(
+      `📩 RESIGN REQUEST\nUser: <@${i.user.id}>\nReason: ${reason}`
+    );
+
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId(`resign_accept_${i.user.id}`)
+        .setLabel("Accept Resign")
+        .setStyle(ButtonStyle.Danger)
+    );
+
+    await msg.edit({ components: [row] });
+
+    return i.reply({ content: "📩 Sent", ephemeral: true });
+  }
+
+  // PANEL COMMAND
+  if (i.isChatInputCommand() && i.commandName === "panel") {
+    const row = new ActionRowBuilder().addComponents(
+      new ButtonBuilder()
+        .setCustomId("open_apply")
+        .setLabel("Apply Now")
+        .setStyle(ButtonStyle.Primary)
+    );
+
+    return i.reply({ content: "🚀 Applications Open", components: [row] });
   }
 });
 
-// ================= APPLICATION SYSTEM (DM) =================
+// ================= APPLICATION FLOW =================
 async function startApplication(i, roleKey) {
   const roles = {
     hr: "HR",
@@ -122,80 +234,62 @@ async function startApplication(i, roleKey) {
   };
 
   const role = roles[roleKey];
-  const user = i.user;
 
   try {
-    await user.send(`📩 Starting **${role}** application`);
+    await i.user.send(`📩 Starting **${role}** application`);
 
     const answers = [];
 
     for (let q of questions) {
-      await user.send(q);
-
-      const collected = await user.dmChannel.awaitMessages({
-        filter: m => m.author.id === user.id,
-        max: 1,
-        time: 300000
-      });
-
-      answers.push(collected.first()?.content || "No answer");
+      answers.push(await ask(i.user, q));
     }
 
     const id = Date.now().toString();
 
-    const appData = {
+    const app = {
       id,
-      user: user.id,
+      user: i.user.id,
       role,
       answers,
       time: Date.now()
     };
 
-    db.applications.push(appData);
+    db.applications.push(app);
     saveDB();
 
-    // SEND TO STAFF CHANNEL
     const channel = await client.channels.fetch(db.config.applicationChannel);
 
     const embed = new EmbedBuilder()
       .setTitle("📩 New Application")
-      .setDescription(`User: <@${user.id}>\nRole: ${role}`)
+      .setDescription(`User: <@${i.user.id}>\nRole: ${role}`)
       .setColor("Blue")
       .setFooter({ text: `ID: ${id}` });
 
     questions.forEach((q, index) => {
-      embed.addFields({
-        name: q,
-        value: answers[index] || "None"
-      });
+      embed.addFields({ name: q, value: answers[index] });
     });
 
     const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId(`accept_${id}`)
-        .setLabel("Accept")
-        .setStyle(ButtonStyle.Success),
-
-      new ButtonBuilder()
-        .setCustomId(`deny_${id}`)
-        .setLabel("Deny")
-        .setStyle(ButtonStyle.Danger)
+      new ButtonBuilder().setCustomId(`accept_${id}`).setLabel("Accept").setStyle(ButtonStyle.Success),
+      new ButtonBuilder().setCustomId(`deny_${id}`).setLabel("Deny").setStyle(ButtonStyle.Danger)
     );
 
     await channel.send({ embeds: [embed], components: [row] });
 
-    return i.reply({ content: "📩 Check your DMs!", ephemeral: true });
+    return i.reply({ content: "📩 Check DMs", ephemeral: true });
 
   } catch {
-    return i.reply({ content: "❌ Enable DMs.", ephemeral: true });
+    return i.reply({ content: "❌ Enable DMs", ephemeral: true });
   }
 }
 
-// ================= PANEL COMMAND =================
+// ================= SLASH COMMANDS =================
 const commands = [
+  new SlashCommandBuilder().setName("panel").setDescription("Open panel"),
+
   new SlashCommandBuilder()
-    .setName("panel")
-    .setDescription("Open application panel")
+    .setName("resign")
+    .addStringOption(o => o.setName("reason").setRequired(true))
 ].map(c => c.toJSON());
 
 const rest = new REST({ version: "10" }).setToken(config.token);
@@ -206,26 +300,7 @@ const rest = new REST({ version: "10" }).setToken(config.token);
     { body: commands }
   );
 
-  console.log("Commands registered");
+  console.log("Commands loaded");
 })();
-
-// ================= PANEL HANDLER =================
-client.on("interactionCreate", async (i) => {
-  if (!i.isChatInputCommand()) return;
-
-  if (i.commandName === "panel") {
-    const row = new ActionRowBuilder().addComponents(
-      new ButtonBuilder()
-        .setCustomId("open_apply")
-        .setLabel("Apply Now")
-        .setStyle(ButtonStyle.Primary)
-    );
-
-    return i.reply({
-      content: "🚀 Staff Applications",
-      components: [row]
-    });
-  }
-});
 
 client.login(config.token);
